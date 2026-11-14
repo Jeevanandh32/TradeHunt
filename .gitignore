@@ -1,0 +1,15 @@
+# Market data and Arista images are licensed/large: never commit them
+data/
+images/
+*.tar.xz
+
+# Terraform local state, plans and settings
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/terraform.tfvars
+
+# Editor and Python leftovers
+*.code-workspace
+__pycache__/

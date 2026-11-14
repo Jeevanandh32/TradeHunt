@@ -1,0 +1,103 @@
+# TradeHunt: redundant A/B market-data network. Runs on the GCP VM only.
+#
+#             A side 10.1.0.0/16                         B side 10.2.0.0/16
+#  exchange:eth1 - a-edge - a-leaf - sub1/sub2:eth1    exchange:eth2 - b-edge - b-leaf - sub1/sub2:eth2
+name: tradehunt
+
+mgmt:
+  network: tradehunt-mgmt
+  ipv4-subnet: 172.20.20.0/24
+
+topology:
+  kinds:
+    arista_ceos:
+      image: ceos:4.37.0F
+    linux:
+      image: tradehunt-host:latest
+
+  nodes:
+    a-edge:
+      kind: arista_ceos
+      mgmt-ipv4: 172.20.20.11
+      startup-config: configs/a-edge.partial.cfg
+    a-leaf:
+      kind: arista_ceos
+      mgmt-ipv4: 172.20.20.12
+      startup-config: configs/a-leaf.partial.cfg
+    b-edge:
+      kind: arista_ceos
+      mgmt-ipv4: 172.20.20.21
+      startup-config: configs/b-edge.partial.cfg
+    b-leaf:
+      kind: arista_ceos
+      mgmt-ipv4: 172.20.20.22
+      startup-config: configs/b-leaf.partial.cfg
+
+    exchange:
+      kind: linux
+      mgmt-ipv4: 172.20.20.31
+      binds:
+        - ../feed:/opt/feed:ro
+        - /opt/tradehunt/data:/data:ro
+      exec:
+        - ip addr add 10.1.0.10/24 dev eth1
+        - ip addr add 10.2.0.10/24 dev eth2
+        - ip route add 10.1.0.0/16 via 10.1.0.1 dev eth1
+        - ip route add 10.2.0.0/16 via 10.2.0.1 dev eth2
+        # feed A groups leave on the A link, feed B groups on the B link
+        - ip route add 232.1.0.0/16 dev eth1
+        - ip route add 232.2.0.0/16 dev eth2
+    sub1:
+      kind: linux
+      mgmt-ipv4: 172.20.20.41
+      binds:
+        - ../feed:/opt/feed:ro
+      exec:
+        - ip addr add 10.1.10.11/24 dev eth1
+        - ip addr add 10.2.10.11/24 dev eth2
+        - ip route add 10.1.0.0/16 via 10.1.10.1 dev eth1
+        - ip route add 10.2.0.0/16 via 10.2.10.1 dev eth2
+    sub2:
+      kind: linux
+      mgmt-ipv4: 172.20.20.42
+      binds:
+        - ../feed:/opt/feed:ro
+      exec:
+        - ip addr add 10.1.10.12/24 dev eth1
+        - ip addr add 10.2.10.12/24 dev eth2
+        - ip route add 10.1.0.0/16 via 10.1.10.1 dev eth1
+        - ip route add 10.2.0.0/16 via 10.2.10.1 dev eth2
+
+    # Monitoring sits on the management network only; reach it through an SSH tunnel to the VM.
+    prometheus:
+      kind: linux
+      image: prom/prometheus:v3.1.0
+      mgmt-ipv4: 172.20.20.50
+      binds:
+        - ../monitoring/prometheus:/etc/prometheus:ro
+      cmd: --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=7d
+      ports:
+        - 127.0.0.1:9090:9090
+    grafana:
+      kind: linux
+      image: grafana/grafana:11.4.0
+      mgmt-ipv4: 172.20.20.51
+      binds:
+        - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+        - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      env:
+        GF_AUTH_ANONYMOUS_ENABLED: "true"
+        GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+        GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tradehunt.json
+      ports:
+        - 127.0.0.1:3000:3000
+
+  links:
+    - endpoints: ["exchange:eth1", "a-edge:eth1"]
+    - endpoints: ["a-edge:eth2", "a-leaf:eth1"]
+    - endpoints: ["a-leaf:eth2", "sub1:eth1"]
+    - endpoints: ["a-leaf:eth3", "sub2:eth1"]
+    - endpoints: ["exchange:eth2", "b-edge:eth1"]
+    - endpoints: ["b-edge:eth2", "b-leaf:eth1"]
+    - endpoints: ["b-leaf:eth2", "sub1:eth2"]
+    - endpoints: ["b-leaf:eth3", "sub2:eth2"]

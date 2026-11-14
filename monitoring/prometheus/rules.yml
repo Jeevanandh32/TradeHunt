@@ -1,0 +1,30 @@
+groups:
+  - name: tradehunt
+    rules:
+      # One feed has gone quiet while the other is still delivering: arbitration is hiding the loss.
+      - alert: FeedSideSilent
+        expr: |
+          tradehunt_feed_last_packet_age_seconds > 3
+          and on(host) (min by(host) (tradehunt_feed_last_packet_age_seconds >= 0) < 1)
+        for: 2s
+        labels: {severity: critical}
+        annotations:
+          summary: "Feed {{ $labels.feed }} silent on {{ $labels.host }} while the other feed is healthy"
+
+      - alert: MergedGap
+        expr: increase(tradehunt_merged_gaps_total[30s]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Messages missing on both feeds on {{ $labels.host }}"
+
+      - alert: UnrecoveredMessages
+        expr: increase(tradehunt_unrecovered_messages_total[1m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Retransmission could not recover messages on {{ $labels.host }}"
+
+      - alert: UdpReceiveBufferOverflow
+        expr: increase(tradehunt_udp_rcvbuf_errors_total[30s]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Kernel dropping UDP on {{ $labels.host }}: socket receive buffer full"
