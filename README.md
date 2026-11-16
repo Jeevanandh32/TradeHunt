@@ -1,5 +1,9 @@
 # TradeHunt
 
+[![TradeHunt: an exchange sending feed A and feed B through four Arista switches to two trading servers](docs/cover.png)](https://jeevanandh32.github.io/tradehunt-demo.html)
+
+**▶ [Watch the 2-minute demo](https://jeevanandh32.github.io/tradehunt-demo.html)** (or [download the MP4](docs/tradehunt-demo.mp4))
+
 *Hunting down market-data feed failures in a redundant multicast network.*
 
 A lab that rebuilds how stock exchanges deliver market data to trading firms, replays **real Nasdaq data** through it, breaks it in realistic ways, and diagnoses each failure the way a market-data support engineer would.
@@ -53,6 +57,7 @@ Exchanges publish market data over **multicast**, on two identical feeds (**A** 
 | `lab/incident.sh` | Injects or fixes an incident |
 | `lab/blind-run.sh` | Random incidents, diagnosed and scored automatically |
 | `DEMO.md` | Script for a 3-minute demo video |
+| `docs/` | Cover image and the 2-minute demo video |
 | `monitoring/` | Prometheus scrape config and alert rules, Grafana dashboard |
 | `kb/` | One support-style knowledgebase article per incident |
 | `terraform/` | The Google Cloud VM that hosts the lab |
