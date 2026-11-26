@@ -48,6 +48,9 @@ Exchanges publish market data over **multicast**, on two identical feeds (**A** 
 | `feed/handler.py` | The trading server: A/B arbitration, gap recovery, metrics |
 | `feed/report.py` | One-line summaries of publisher and handler results |
 | `tools/tradehunt.py` | The diagnostic tool |
+| `tools/feedscope.py` | Feed quality and microburst report for any MoldUDP64 capture (pcap/pcapng) |
+| `tools/mkcapture.py` | Writes captures of the A/B feeds from the real data, with exact seeded faults |
+| `tests/` | feedscope tests: hand-built captures plus real-data fault injection |
 | `lab/` | The network and the scripts that drive it |
 | `lab/tradehunt.clab.yml` | Topology: 4 switches, exchange, 2 servers, Prometheus, Grafana |
 | `lab/configs/` | Arista switch configs, one per switch |
@@ -86,6 +89,33 @@ Exchanges publish market data over **multicast**, on two identical feeds (**A** 
 | Lab limit (software switches) | About 2,000 packets/s per feed, so replays run at 0.1× |
 
 All numbers and how they were measured are in [RESULTS.md](RESULTS.md).
+
+## feedscope: check any capture, not just the lab
+
+`tradehunt diagnose` only works inside this lab. `tools/feedscope.py` takes the same ideas to **any packet capture** of MoldUDP64 feeds (tcpdump, Wireshark, a SPAN or TAP port, a cloud packet mirror). It needs only the Python standard library and no access to the switches.
+
+```bash
+python3 tools/feedscope.py capture.pcap                                   # TradeHunt's groups by default
+python3 tools/feedscope.py capture.pcapng --side A=239.1.1.0/24 --side B=239.2.1.0/24 --json
+```
+
+| It reports | Why it matters |
+|---|---|
+| Gaps per side, reordered and duplicate packets | Loss on one feed is normal; it should be tracked |
+| Messages missing on **both** sides | Only retransmission can recover them |
+| A side that goes silent while the other keeps sending | Arbitration hides this from clients (incident 6) |
+| A/B skew and which side usually wins | Sets the arbitration window (150 ms in this lab) |
+| Peak rate at 1 s, 100 ms, 10 ms, 1 ms and 100 µs, and the worst 1 ms bursts | Per-second averages hide the bursts that overflow buffers |
+| Receive buffer needed per socket for a given consumer speed | Sizes `SO_RCVBUF` from the bursts, not the averages (incident 5) |
+
+On the real Nasdaq open at full speed, the busiest **1 ms** ran at 47,000 packets/s per feed, 2.3× the busiest second. A consumer that keeps up with the busiest second still needs about **1 MB** of buffer per socket; one twice as fast needs about 25 KB. Results and validation are in [RESULTS.md](RESULTS.md#day-5--feedscope-feed-quality-and-microbursts-from-any-capture-2026-11-25).
+
+```bash
+# make a capture from the real data with known faults, then check feedscope finds exactly those
+python3 tools/mkcapture.py data/itch50_05_15_open_slice.bin open.pcap --loss A=0.02 --loss B=0.02 --jitter B=0.3 --kill A=4
+python3 tools/feedscope.py open.pcap --silence 0.5
+python3 -m unittest discover -s tests -v
+```
 
 ## Running it
 

@@ -13,3 +13,7 @@ terraform/terraform.tfvars
 # Editor and Python leftovers
 *.code-workspace
 __pycache__/
+
+# Packet captures (feedscope input) can be large
+*.pcap
+*.pcapng

@@ -166,9 +166,64 @@ With the default 4 MB buffer, the same replay has **0 drops and 0 gaps** (Day 2)
 
 Incident 1 (TTL) didn't come up in this random set; it was covered in the Day 3 blind runs. **Combined: 18 of 18 correct, and every incident type appeared at least once.**
 
+## Day 5 — feedscope: feed quality and microbursts from any capture (2026-11-25)
+
+Built `tools/feedscope.py`, which reads a pcap or pcapng of MoldUDP64 feeds and reports gaps, messages missing on both sides, silent sides, A/B skew, microbursts and per-socket receive-buffer needs. Built `tools/mkcapture.py`, which writes captures from the real Nasdaq data through the publisher's own packet plan. It stamps each packet with the exchange time of its last message and injects seeded faults, so every expected number is known.
+
+### The real open at full speed (no lab limit)
+Window 09:29:58–09:30:05 at 1.0×: 2,440,699 messages, 76,761 packets per feed. The lab could only replay this at 0.1×; a capture has no forwarding limit.
+
+| Window | Peak packets/s per feed |
+|---|---|
+| average over the window | 10,965 |
+| 1 s | 20,657 |
+| 100 ms | 28,650 |
+| 10 ms | 38,400 |
+| **1 ms** | **47,000** (2.3× the busiest second, 4.3× the average) |
+| 100 µs | 110,000 |
+
+**Receive buffer for the busiest socket** (232.1.1.1:30001, busiest second 5,273 packets/s), for a consumer that reads at a steady rate:
+
+| Consumer reads | Peak backlog | Kernel memory needed (~2.3 KB per packet) |
+|---|---|---|
+| 5,273 pkts/s (keeps up with the busiest second) | 509 packets | ~1 MB |
+| 10,546 pkts/s (2×) | 11 packets | ~25 KB |
+| 26,365 pkts/s (5×) | 4 packets | ~9 KB |
+
+Sizing a consumer or its buffer from per-second rates fails at the open: keeping up with the busiest second still leaves a 509-packet backlog. These are minimums for a steady reader; one that stalls (a busy CPU, a GC pause) needs more. That fits incident 5, where a 4 KB buffer, room for about one packet, dropped ~8,000 packets per server even at 0.1×.
+
+Caveat: below 1 ms, the shape depends on packetization. The publisher batches each channel's messages per millisecond, and Nasdaq's own packetizer will differ.
+
+### Validation: feedscope finds exactly what was injected
+13 tests (`python3 -m unittest discover -s tests`). The synthetic tests use hand-built captures; the real-data tests use the Nasdaq slice 09:29:58–09:30:01 at 1.0×.
+
+| Injected | feedscope reported |
+|---|---|
+| 2% packet loss on each side, plus 0–0.3 ms jitter on B | Gap messages per side **equal to the injected loss**; messages and holes missing on both sides **equal to the packets dropped on both** |
+| 0.4 ms delay + 0–0.3 ms jitter on B | A/B skew between 0.4 and 0.7 ms; A first 100%; reordered B packets counted as late, **not as loss** |
+| Side A killed at 1.5 s | A silent from 1.5 s, flagged as hidden by arbitration; 0 messages missing on both sides |
+| Tail loss on both sides | Found through the end-of-session marker |
+| Same capture as pcap and pcapng | Identical results |
+
+Full-open fault run (2% loss on both, B delayed 0.4 + 0–0.3 ms, A killed at 4 s):
+- **B:** injected 49,063 lost messages and found **49,063**, even though jitter reordered 7,293 B packets.
+- **A:** injected 28,470 and found 28,451. The other 19 were dropped right before A died, so no later A packet reveals them; no tool can see that loss from the capture alone.
+- **Silent feed:** A was reported silent from **4.0 s**, with B still sending.
+
+Analysis speed: 153,530 packets in 0.8 s on an M4 Mac.
+
+### Bugs found while building
+1. **Reordering counted as loss** (found by the full-open fault run): jitter made later packets arrive first, and the first version counted every jump in sequence numbers as a gap: 318,507 "lost" B messages against 49,063 injected. Gaps are now counted at the end from what actually arrived, and reordered packets are reported separately as `late`.
+2. **pcapng timestamps 1 ns early** (found by the pcap-vs-pcapng test): floating-point conversion put some packets in the wrong time window. It now uses exact integer arithmetic.
+
+### Not yet done
+- Run feedscope on a capture taken from the lab network itself (tcpdump on sub1), not only on generated captures.
+- Captures from other exchanges' MoldUDP64 feeds: only TradeHunt's session naming and groups have been tested.
+
 ## Summary (measured, lab only)
 - Replayed the Nasdaq open (peak 698K msgs/s in the data) at 1/10 speed: **2,440,699 messages, 0 gaps** on both feeds.
 - 2% loss on both feeds: **873,273 of 873,273 messages delivered**, with retransmission recovering what both feeds lost.
 - Silent feed detected in **6.1–7.0 s** while clients lost **0** messages.
 - Socket buffer sizing at the open: **~8,000 kernel drops per server with 4 KB → 0 with 4 MB**.
 - Diagnostic tool: **correct root cause in 18 of 18 blind runs** across 6 incident types.
+- feedscope on the real open at full speed: busiest 1 ms at **47,000 packets/s** per feed, 2.3× the busiest second; a consumer that keeps up with the busiest second still needs **~1 MB** of buffer per socket. Injected loss found **exactly**, including under reordering.
