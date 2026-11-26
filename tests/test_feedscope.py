@@ -86,6 +86,15 @@ class Synthetic(unittest.TestCase):
         self.assertEqual((s["sides"]["B"]["gap_events"], s["sides"]["B"]["gap_messages"]), (1, 3))
         self.assertEqual(s["missing_on_all_sides"]["messages"], 0)
 
+    def test_capture_that_joins_mid_stream(self):
+        # drop the first 30 packets on both sides: the capture "starts" at seq 91, which is not a gap
+        recs = [x for x in self.build() if not any(mold_pkt(1 + 3 * i, 3)[10:18] in x[1] for i in range(30))]
+        r = self.run_capture(recs)
+        s = r["sessions"][0]
+        self.assertEqual(s["first_seq"], 91)
+        self.assertEqual(s["missing_on_all_sides"]["messages"], 0)
+        self.assertEqual(s["sides"]["A"]["gap_messages"], 0)
+
     def test_reordering_is_not_loss(self):
         recs = self.build()
         # swap the arrival times of B packets 30 and 31

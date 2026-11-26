@@ -195,7 +195,7 @@ Sizing a consumer or its buffer from per-second rates fails at the open: keeping
 Caveat: below 1 ms, the shape depends on packetization. The publisher batches each channel's messages per millisecond, and Nasdaq's own packetizer will differ.
 
 ### Validation: feedscope finds exactly what was injected
-13 tests (`python3 -m unittest discover -s tests`). The synthetic tests use hand-built captures; the real-data tests use the Nasdaq slice 09:29:58–09:30:01 at 1.0×.
+14 tests (`python3 -m unittest discover -s tests`). The synthetic tests use hand-built captures; the real-data tests use the Nasdaq slice 09:29:58–09:30:01 at 1.0×.
 
 | Injected | feedscope reported |
 |---|---|
@@ -215,10 +215,28 @@ Analysis speed: 153,530 packets in 0.8 s on an M4 Mac.
 ### Bugs found while building
 1. **Reordering counted as loss** (found by the full-open fault run): jitter made later packets arrive first, and the first version counted every jump in sequence numbers as a gap: 318,507 "lost" B messages against 49,063 injected. Gaps are now counted at the end from what actually arrived, and reordered packets are reported separately as `late`.
 2. **pcapng timestamps 1 ns early** (found by the pcap-vs-pcapng test): floating-point conversion put some packets in the wrong time window. It now uses exact integer arithmetic.
+3. **Captures that start mid-stream** (found by the lab capture below): the first version counted from sequence 1, so the 51,182 messages sent before the capture started showed up as "missing on both sides". Counting now starts at the first sequence number in the capture.
+
+### On a real capture from the lab network
+`tcpdump -i any` on sub1 for 45 s during the continuous 0.1× replay. Feed A's uplink (a-edge Ethernet2) was shut at 12 s and brought back at 30 s. The capture is 19,066 packets in Linux cooked v2 format, which the generated captures never used.
+
+| sub1 during the same outage | Lab feed handler (Prometheus) | feedscope (capture) |
+|---|---|---|
+| Feed A messages missed | 62,737 | 62,704 |
+| Feed B messages missed | 0 | 0 |
+| Messages missing on both feeds | 0 | 0 |
+
+The 0.05% difference is most likely Prometheus `increase()`, which estimates over a 4-minute window instead of counting exactly.
+
+- Feed A **silent from t = 12.07 s**, when the link was shut, and flagged as hidden by arbitration.
+- Feed A stayed **silent for 23.4 s**, though the link was down for about 18 s: feed A took about 5 s to flow again after `no shutdown`, while OSPF and PIM re-converged. This fits the 7.0–11.7 s it took the alert to clear on Days 2 and 4.
+- A/B skew p50 3.7–5.3 ms per channel, p99 10.9–12.2 ms; first arrivals split 45–68% A by channel.
 
 ### Not yet done
-- Run feedscope on a capture taken from the lab network itself (tcpdump on sub1), not only on generated captures.
 - Captures from other exchanges' MoldUDP64 feeds: only TradeHunt's session naming and groups have been tested.
+
+### Lab fix
+`lab/deploy.sh` waited forever when stopped switch containers from an earlier VM shutdown blocked the deploy, and it hid containerlab's errors. It now starts from a clean destroy, shows deploy errors, and fails with a message if a switch does not boot within 5 minutes or routing does not come up within 200 s.
 
 ## Summary (measured, lab only)
 - Replayed the Nasdaq open (peak 698K msgs/s in the data) at 1/10 speed: **2,440,699 messages, 0 gaps** on both feeds.
@@ -226,4 +244,4 @@ Analysis speed: 153,530 packets in 0.8 s on an M4 Mac.
 - Silent feed detected in **6.1–7.0 s** while clients lost **0** messages.
 - Socket buffer sizing at the open: **~8,000 kernel drops per server with 4 KB → 0 with 4 MB**.
 - Diagnostic tool: **correct root cause in 18 of 18 blind runs** across 6 incident types.
-- feedscope on the real open at full speed: busiest 1 ms at **47,000 packets/s** per feed, 2.3× the busiest second; a consumer that keeps up with the busiest second still needs **~1 MB** of buffer per socket. Injected loss found **exactly**, including under reordering.
+- feedscope on the real open at full speed: busiest 1 ms at **47,000 packets/s** per feed, 2.3× the busiest second; a consumer that keeps up with the busiest second still needs **~1 MB** of buffer per socket. Injected loss found **exactly**, including under reordering; on a real lab capture, feed A loss within 0.05% of the feed handler's own count.

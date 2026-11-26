@@ -157,7 +157,7 @@ def analyze(path, sides, silence_ns, drain_pps, truesize, top):
     pkts, wire = defaultdict(int), defaultdict(int)
     times = defaultdict(list)                       # side -> packet timestamps
     # per (side, session)
-    st = defaultdict(lambda: {"packets": 0, "messages": 0, "heartbeats": 0, "eos": 0, "late": 0, "duplicates": 0, "next": None, "max_seq": 0, "cov": Coverage()})
+    st = defaultdict(lambda: {"packets": 0, "messages": 0, "heartbeats": 0, "eos": 0, "late": 0, "duplicates": 0, "next": None, "max_seq": 0, "min_seq": None, "cov": Coverage()})
     # per socket (side, group, port): arrival times and frame lengths for burst/buffer analysis
     sock = defaultdict(list)
     copies = {}                                     # (session, first seq) -> (side, ts)
@@ -187,6 +187,7 @@ def analyze(path, sides, silence_ns, drain_pps, truesize, top):
         if count in (HEARTBEAT, END_OF_SESSION):
             s["heartbeats" if count == HEARTBEAT else "eos"] += 1
             s["max_seq"] = max(s["max_seq"], seq - 1)  # a heartbeat says everything before seq was sent
+            s["min_seq"] = seq if s["min_seq"] is None else min(s["min_seq"], seq)
             continue
         s["messages"] += count
         if s["next"] is not None and seq < s["next"]:
@@ -194,6 +195,7 @@ def analyze(path, sides, silence_ns, drain_pps, truesize, top):
         s["duplicates"] += s["cov"].mark(seq, count)
         s["next"] = max(s["next"] or 0, seq + count)
         s["max_seq"] = max(s["max_seq"], seq + count - 1)
+        s["min_seq"] = seq if s["min_seq"] is None else min(s["min_seq"], seq)
         key = (session, seq)
         other = copies.pop(key, None)
         if other is None:
@@ -212,30 +214,33 @@ def analyze(path, sides, silence_ns, drain_pps, truesize, top):
     q_sessions = []
     for sess in sessions:
         # Gaps are counted at the end, from what actually arrived, so reordered packets are not gaps.
-        # Each side is judged up to the highest sequence it has evidence for (data or heartbeat), so a
-        # side that dies is reported as silent, not as missing everything after it died.
+        # Counting starts at the first sequence number any side showed: a capture usually joins the
+        # stream mid-session, and what was sent before it started is not missing. Each side is judged
+        # up to the highest sequence it has evidence for (data or heartbeat), so a side that dies is
+        # reported as silent, not as missing everything after it died.
         per_side, covs = {}, []
-        top_seq = max(st[(n, sess)]["max_seq"] for n in side_names if (n, sess) in st)
+        here = [st[(n, sess)] for n in side_names if (n, sess) in st]
+        top_seq = max(s["max_seq"] for s in here)
+        first_seq = min(s["min_seq"] for s in here if s["min_seq"] is not None)
         for n in side_names:
             s = st.get((n, sess))
             if not s:
                 continue
-            seen = _window(s["cov"].bits, s["max_seq"])
+            seen = _window(s["cov"].bits, first_seq, s["max_seq"])
             per_side[n] = {k: s[k] for k in ("packets", "messages", "heartbeats", "eos", "late", "duplicates")}
             per_side[n]["gap_messages"] = seen.count(0)
             per_side[n]["gap_events"] = _runs(seen)
-            covs.append(_window(s["cov"].bits, top_seq))
-        # messages missing on every side, up to the highest sequence any side saw
-        if top_seq == 0:  # heartbeats only
-            covs = [b""]
-        union = int.from_bytes(covs[0], "big")
-        for c in covs[1:]:
+            covs.append(_window(s["cov"].bits, first_seq, top_seq))
+        # messages missing on every side, between the first and highest sequence any side showed
+        width = max(0, top_seq - first_seq + 1)
+        union = 0
+        for c in covs:
             union |= int.from_bytes(c, "big")
-        union = union.to_bytes(top_seq, "big")
+        union = union.to_bytes(width, "big")
         both_missing, holes = union.count(0), _runs(union)
         sk = sorted(skew[sess])
         q_sessions.append({
-            "session": sess, "sides": per_side, "highest_seq": top_seq,
+            "session": sess, "sides": per_side, "first_seq": first_seq, "highest_seq": top_seq,
             "missing_on_all_sides": {"messages": both_missing, "holes": holes},
             "ab_skew_ms": None if not sk else {k: round(quantile(sk, v) / 1e6, 3) for k, v in
                                                (("p50", .5), ("p99", .99), ("p999", .999), ("max", 1.0))},
@@ -326,10 +331,11 @@ def analyze(path, sides, silence_ns, drain_pps, truesize, top):
             "buffer_model": {"truesize_bytes_per_packet": truesize, "consumer": "steady reader at the listed rates"}}
 
 
-def _window(bits, top):
-    """Bitmap bytes for sequence numbers 1..top (0 = not seen)."""
-    w = bytes(bits[1:top + 1])
-    return w + bytes(top - len(w))
+def _window(bits, lo, hi):
+    """Bitmap bytes for sequence numbers lo..hi (0 = not seen)."""
+    width = max(0, hi - lo + 1)
+    w = bytes(bits[lo:hi + 1])
+    return w + bytes(width - len(w))
 
 
 def _runs(b):
@@ -363,7 +369,7 @@ def report(r):
     out = [f"feedscope: {r['capture']}  ({r['duration_s']} s, sides "
            + ", ".join(f"{k}={v}" for k, v in r["sides"].items()) + ")", "=" * 72, "FEED QUALITY"]
     for s in r["sessions"]:
-        out.append(f"  session {s['session']}  (highest seq {s['highest_seq']:,})")
+        out.append(f"  session {s['session']}  (seq {s['first_seq']:,} to {s['highest_seq']:,})")
         for n, v in s["sides"].items():
             out.append(f"    {n}: {v['messages']:,} msgs in {v['packets']:,} pkts · gaps {v['gap_events']} "
                        f"({v['gap_messages']:,} msgs) · late {v['late']:,} · dups {v['duplicates']:,} · heartbeats {v['heartbeats']}")
